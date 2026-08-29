@@ -34,10 +34,10 @@ jobs:
       - run: xvfb-run -a env PW_HEADLESS=0 npm run e2e:smoke
       - run: npm run package
         env:
-          SOURCE_DATE_EPOCH: 0
+          SOURCE_DATE_EPOCH: 315532800
       - run: npm run verify:reproducible
         env:
-          SOURCE_DATE_EPOCH: 0
+          SOURCE_DATE_EPOCH: 315532800
       - name: Upload verified package
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:

@@ -46,11 +46,11 @@ jobs:
       - run: xvfb-run -a env PW_HEADLESS=0 npm run e2e:smoke
       - run: npm run package
         env:
-          SOURCE_DATE_EPOCH: 0
+          SOURCE_DATE_EPOCH: 315532800
       - run: npm run verify:dist
       - run: npm run verify:reproducible
         env:
-          SOURCE_DATE_EPOCH: 0
+          SOURCE_DATE_EPOCH: 315532800
       - name: Create draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
