@@ -1,0 +1,20 @@
+/* Оформление берётся из классов MAX (button button--xsmall button--ghost).
+   Здесь только то, что нужно нашей кнопке поверх них, плюс запасной вид,
+   если приложение поменяет свои классы и они перестанут применяться. */
+.max-loader-button {
+  white-space: nowrap;
+}
+.max-loader-button:not(.button) {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  min-height: 32px;
+  padding: 0 12px;
+}
+.max-loader-button:not(.button):hover { background: rgba(128, 128, 128, .16); }
+.max-loader-button:disabled { cursor: wait; opacity: .65; }
