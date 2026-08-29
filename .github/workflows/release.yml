@@ -1,0 +1,58 @@
+name: Release (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version matching package.json (for example 0.1.0)'
+        required: true
+        type: string
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - name: Validate release version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          node -e "const p=require('./package.json'); const v=process.env.INPUT_VERSION || process.env.TAG_NAME.replace(/^v/,''); if (p.version !== v) throw new Error('Release version does not match package.json')"
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: node scripts/assets/validate-assets.mjs
+      - run: npx playwright install --with-deps chromium
+      - run: xvfb-run -a env PW_HEADLESS=0 npm run e2e:smoke
+      - run: npm run package
+        env:
+          SOURCE_DATE_EPOCH: 0
+      - run: npm run verify:dist
+      - run: npm run verify:reproducible
+        env:
+          SOURCE_DATE_EPOCH: 0
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version || github.ref_name }}
+        run: gh release create "v${VERSION#v}" maxloader-*.zip maxloader-*.zip.sha256 --draft --title "Max Loader ${VERSION#v}" --notes "Verified extension package. Chrome Web Store publication is manual."

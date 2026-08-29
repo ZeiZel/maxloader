@@ -14,6 +14,7 @@ export default defineConfig({
   dts: false,
   onSuccess: [
     'cp manifest.json dist/',
+    'node scripts/manifest-version.mjs dist/manifest.json',
     'cp src/styles.css dist/',
     'cp -R public/. dist/',
     'mv dist/entry.global.js dist/content.js',
