@@ -104,5 +104,13 @@ export function voicePlayButton(message: ParentNode): HTMLButtonElement | null {
 
 /** Есть плитки галереи, но ссылок ещё нет — вложения не отрисованы. */
 export function hasPendingMedia(message: ParentNode): boolean {
-  return Boolean(message.querySelector(`${MEDIA_SELECTOR} ${TILE_SELECTOR}`)) && mediaItems(message).length === 0;
+  const tiles = Array.from(message.querySelectorAll<HTMLElement>(`${MEDIA_SELECTOR} ${TILE_SELECTOR}`));
+  if (tiles.length === 0) return false;
+  return tiles.some((tile) => {
+    const video = tile.querySelector<HTMLVideoElement>('video');
+    // Poster is not a usable video source. A video tile remains pending until
+    // its source (or currentSrc) is materialized, even when it has a poster.
+    if (video) return !(video.querySelector('source[src]') || video.currentSrc);
+    return !tile.querySelector<HTMLImageElement>('img[src]');
+  });
 }

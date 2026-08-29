@@ -1,3 +1,3 @@
 import { installBackground } from './background';
 
-installBackground();
+installBackground(chrome.runtime, chrome.downloads);

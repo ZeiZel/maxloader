@@ -7,13 +7,15 @@ export const CHANNEL = 'max-loader';
  * поэтому хук видит взведённый флаг синхронно — уже на первом клике очереди.
  */
 export const ARMED_ATTRIBUTE = 'data-max-loader-armed';
+export const RUN_ATTRIBUTE = 'data-max-loader-run';
+export const SEQUENCE_ATTRIBUTE = 'data-max-loader-sequence';
 export const HOOK_ATTRIBUTE = 'data-max-loader-hook';
 /** Якорь, созданный нами самими для запасного скачивания, — хук обязан его пропустить,
  *  иначе перехват и запасной путь зацикливаются друг на друге. */
 export const FALLBACK_ATTRIBUTE = 'data-max-loader-fallback';
 
 /** Через сколько хук сам снимает флаг, если очередь упала и не убрала его. */
-export const ARM_TIMEOUT_MS = 60_000;
+export const ARM_TIMEOUT_MS = 15_000;
 
 /**
  * Пойманная ссылка едет из MAIN-мира в isolated через CustomEvent на общем document.
@@ -22,13 +24,15 @@ export const ARM_TIMEOUT_MS = 60_000;
  */
 export const CAPTURE_EVENT = `${CHANNEL}:capture`;
 
-export interface CaptureDetail { href: string; filename: string }
+export interface CaptureDetail { href: string; filename: string; run?: string; sequence?: number }
 
 export const isCaptureDetail = (value: unknown): value is CaptureDetail =>
   typeof value === 'object' && value !== null &&
   typeof (value as CaptureDetail).filename === 'string' &&
   typeof (value as CaptureDetail).href === 'string' &&
-  /^https?:/i.test((value as CaptureDetail).href);
+  /^https?:/i.test((value as CaptureDetail).href) &&
+  ((value as CaptureDetail).run === undefined || typeof (value as CaptureDetail).run === 'string') &&
+  ((value as CaptureDetail).sequence === undefined || Number.isInteger((value as CaptureDetail).sequence));
 
 export interface DownloadRequest { channel: typeof CHANNEL; type: 'download'; href: string; filename: string }
 export type DownloadResponse = { ok: true; id: number } | { ok: false; error: string };

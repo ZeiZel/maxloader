@@ -15,39 +15,50 @@ const POLL_INTERVAL_MS = 50;
 export async function resolveVoiceHref(
   doc: Document,
   play: HTMLButtonElement,
-  timeoutMs = VOICE_RESOLVE_TIMEOUT_MS,
-  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  timeoutMs: number,
+  sleep: (ms: number) => Promise<void>,
 ): Promise<string | undefined> {
-  const before = currentAudioSource(doc);
+  const snapshot = Array.from(doc.querySelectorAll<HTMLAudioElement>('audio')).map((audio) => ({
+    audio, src: audio.currentSrc || audio.src, paused: audio.paused, time: audio.currentTime,
+  }));
+  const before = new Set(snapshot.map((entry) => entry.src).filter(Boolean));
   play.click();
 
   // Считаем попытки, а не стенные часы: с подменённым sleep опрос по Date.now()
   // выродился бы в холостой цикл на всю длительность таймаута.
   const attempts = Math.max(1, Math.ceil(timeoutMs / POLL_INTERVAL_MS));
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const href = currentAudioSource(doc);
-    if (href && href !== before && /^https?:/i.test(href)) {
-      stopPlayback(doc);
+    const href = Array.from(doc.querySelectorAll<HTMLAudioElement>('audio'))
+      .map((audio) => audio.currentSrc || audio.src)
+      .find((source) => /^https?:/i.test(source) && !before.has(source));
+    if (href) {
+      restorePlayback(doc, snapshot, href);
       return href;
     }
     await sleep(POLL_INTERVAL_MS);
   }
 
-  stopPlayback(doc);
+  restorePlayback(doc, snapshot);
   return undefined;
 }
 
-function currentAudioSource(doc: Document): string {
-  const audio = doc.querySelector<HTMLAudioElement>('audio');
-  return audio?.currentSrc || audio?.src || '';
-}
-
 /** Возвращаем плеер в исходное состояние — мы его трогали только ради ссылки. */
-function stopPlayback(doc: Document): void {
-  doc.querySelectorAll<HTMLAudioElement>('audio').forEach((audio) => {
+function restorePlayback(doc: Document, snapshot: Array<{ audio: HTMLAudioElement; src: string; paused: boolean; time: number }>, resolvedHref?: string): void {
+  const changed = Array.from(doc.querySelectorAll<HTMLAudioElement>('audio')).filter((audio) => {
+    const prior = snapshot.find((entry) => entry.audio === audio);
+    return !prior || (audio.currentSrc || audio.src) !== prior.src || (resolvedHref !== undefined && (audio.currentSrc || audio.src) === resolvedHref);
+  });
+  changed.forEach((audio) => {
     try {
       audio.pause();
       audio.currentTime = 0;
+      const prior = snapshot.find((entry) => entry.audio === audio);
+      if (prior && prior.src && prior.src !== resolvedHref) {
+        audio.src = prior.src;
+        audio.load();
+        audio.currentTime = prior.time;
+        if (!prior.paused) void audio.play().catch(() => undefined);
+      }
     } catch {
       /* элемент уже отсоединён */
     }

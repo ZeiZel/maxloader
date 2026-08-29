@@ -1,16 +1,21 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installPageHook } from '../src/page-hook';
 import { createDownloadBridge } from '../src/download-bridge';
 import { isDownloadRequest, sanitizeFilename, startDownload } from '../src/background';
-import { ARMED_ATTRIBUTE, CAPTURE_EVENT, CHANNEL } from '../src/protocol';
+import { ARMED_ATTRIBUTE, CAPTURE_EVENT, CHANNEL, RUN_ATTRIBUTE, SEQUENCE_ATTRIBUTE } from '../src/protocol';
 
 const win = window as Window & typeof globalThis;
 let uninstall: (() => void) | undefined;
+
+beforeEach(() => {
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+});
 
 afterEach(() => {
   uninstall?.(); uninstall = undefined;
   document.documentElement.removeAttribute(ARMED_ATTRIBUTE);
   document.body.innerHTML = '';
+  vi.restoreAllMocks();
 });
 
 const anchor = (href: string, filename: string) => {
@@ -36,7 +41,10 @@ describe('page hook', () => {
     const seen: string[] = [];
     document.addEventListener(CAPTURE_EVENT, (e) => seen.push((e as CustomEvent).detail.filename));
     document.documentElement.setAttribute(ARMED_ATTRIBUTE, '1');
+    document.documentElement.setAttribute(RUN_ATTRIBUTE, 'test-run');
+    document.documentElement.setAttribute(SEQUENCE_ATTRIBUTE, '1');
     anchor('https://fd.oneme.ru/getfile?rq=1', 'a.md').click();
+    document.documentElement.setAttribute(SEQUENCE_ATTRIBUTE, '2');
     anchor('https://fd.oneme.ru/getfile?rq=2', 'b.md').click();
     await new Promise((r) => setTimeout(r, 0));
     expect(seen).toEqual(['a.md', 'b.md']);
@@ -57,8 +65,33 @@ describe('page hook', () => {
 });
 
 describe('bridge', () => {
+  it('expires an unmet capture expectation and rejects late correlated events', async () => {
+    vi.useFakeTimers();
+    const sent: string[] = [];
+    const bridge = createDownloadBridge({ win, send: async (request) => { sent.push(request.filename); return { ok: true, id: 1 }; }, now: () => 1, random: () => 1 });
+    bridge.arm(); bridge.expectCapture(1);
+    await vi.advanceTimersByTimeAsync(1201);
+    expect(document.documentElement.hasAttribute(ARMED_ATTRIBUTE)).toBe(false);
+    expect(document.documentElement.hasAttribute(RUN_ATTRIBUTE)).toBe(false);
+    expect(document.documentElement.hasAttribute(SEQUENCE_ATTRIBUTE)).toBe(false);
+    win.document.dispatchEvent(new CustomEvent(CAPTURE_EVENT, { detail: { href: 'https://fd.oneme.ru/getfile?rq=1', filename: 'late.md', run: document.documentElement.getAttribute(RUN_ATTRIBUTE), sequence: 1 } }));
+    expect(sent).toEqual([]);
+    bridge.dispose(); vi.useRealTimers();
+  });
+  it('ignores forged captures without an exact expectation or sequence match', () => {
+    uninstall = installPageHook(win);
+    const sent: string[] = [];
+    const bridge = createDownloadBridge({ win, send: async (request) => { sent.push(request.filename); return { ok: true, id: 1 }; }, now: () => 1, random: () => 1 });
+    bridge.arm();
+    win.document.dispatchEvent(new CustomEvent(CAPTURE_EVENT, { detail: { href: 'https://fd.oneme.ru/getfile?rq=1', filename: 'forged.md' } }));
+    bridge.expectCapture(7);
+    win.document.dispatchEvent(new CustomEvent(CAPTURE_EVENT, { detail: { href: 'https://fd.oneme.ru/getfile?rq=2', filename: 'wrong.md', sequence: 8 } }));
+    win.document.dispatchEvent(new CustomEvent(CAPTURE_EVENT, { detail: { href: 'https://fd.oneme.ru/getfile?rq=3', filename: 'accepted.md', run: document.documentElement.getAttribute(RUN_ATTRIBUTE), sequence: 7 } }));
+    expect(sent).toEqual(['accepted.md']);
+    bridge.dispose();
+  });
   it('reports the hook as missing when the MAIN world script did not run', () => {
-    const bridge = createDownloadBridge(win, async () => ({ ok: true, id: 1 }));
+    const bridge = createDownloadBridge({ win, send: async () => ({ ok: true, id: 1 }), now: () => 1, random: () => 1 });
     expect(bridge.arm()).toBe(false);
     bridge.disarm();
     bridge.dispose();
@@ -67,10 +100,14 @@ describe('bridge', () => {
   it('forwards every captured link to the background and counts them', async () => {
     uninstall = installPageHook(win);
     const sent: string[] = [];
-    const bridge = createDownloadBridge(win, async (request) => { sent.push(request.filename); return { ok: true, id: sent.length }; });
+    const bridge = createDownloadBridge({ win, send: async (request) => { sent.push(request.filename); return { ok: true, id: sent.length }; }, now: () => 1, random: () => 1 });
     expect(bridge.arm()).toBe(true);
+    const run = document.documentElement.getAttribute(RUN_ATTRIBUTE)!;
+    bridge.expectCapture();
     anchor('https://fd.oneme.ru/getfile?rq=1', 'a.md').click();
+    bridge.expectCapture();
     anchor('https://fd.oneme.ru/getfile?rq=2', 'b.md').click();
+    bridge.expectCapture();
     anchor('https://fd.oneme.ru/getfile?rq=3', 'c.md').click();
     const stats = await bridge.settle(3, 2000);
     expect(sent).toEqual(['a.md', 'b.md', 'c.md']);
@@ -81,8 +118,9 @@ describe('bridge', () => {
 
   it('falls back to a page download when chrome.downloads refuses', async () => {
     uninstall = installPageHook(win);
-    const bridge = createDownloadBridge(win, async () => ({ ok: false, error: 'blocked' }));
+    const bridge = createDownloadBridge({ win, send: async () => ({ ok: false, error: 'blocked' }), now: () => 1, random: () => 1 });
     bridge.arm();
+    bridge.expectCapture();
     const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click');
     anchor('https://fd.oneme.ru/getfile?rq=1', 'a.md').click();
     const stats = await bridge.settle(1, 2000);
@@ -95,7 +133,7 @@ describe('bridge', () => {
   });
 
   it('gives up after the timeout instead of hanging the button', async () => {
-    const bridge = createDownloadBridge(win, async () => ({ ok: true, id: 1 }));
+    const bridge = createDownloadBridge({ win, send: async () => ({ ok: true, id: 1 }), now: () => 1, random: () => 1 });
     const stats = await bridge.settle(5, 50);
     expect(stats).toEqual({ started: 0, failed: 0 });
     bridge.dispose();
@@ -104,7 +142,7 @@ describe('bridge', () => {
 
 describe('background', () => {
   it('accepts only well-formed http(s) requests', () => {
-    expect(isDownloadRequest({ channel: CHANNEL, type: 'download', href: 'https://a/b', filename: 'x' })).toBe(true);
+    expect(isDownloadRequest({ channel: CHANNEL, type: 'download', href: 'https://fd.oneme.ru/getfile?rq=1', filename: 'x' })).toBe(true);
     expect(isDownloadRequest({ channel: CHANNEL, type: 'download', href: 'javascript:alert(1)', filename: 'x' })).toBe(false);
     expect(isDownloadRequest({ channel: 'other', type: 'download', href: 'https://a/b', filename: 'x' })).toBe(false);
   });

@@ -1,4 +1,4 @@
-import { ARMED_ATTRIBUTE, ARM_TIMEOUT_MS, CAPTURE_EVENT, FALLBACK_ATTRIBUTE, HOOK_ATTRIBUTE } from './protocol';
+import { ARMED_ATTRIBUTE, ARM_TIMEOUT_MS, CAPTURE_EVENT, FALLBACK_ATTRIBUTE, HOOK_ATTRIBUTE, RUN_ATTRIBUTE, SEQUENCE_ATTRIBUTE } from './protocol';
 
 /**
  * Живёт в MAIN-мире страницы.
@@ -15,7 +15,7 @@ export function installPageHook(win: Window & typeof globalThis): () => void {
   const anchorProto = win.HTMLAnchorElement.prototype;
   const originalClick = anchorProto.click;
   const root = win.document.documentElement;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timer: number | undefined;
 
   const armed = () => root.hasAttribute(ARMED_ATTRIBUTE);
 
@@ -24,11 +24,14 @@ export function installPageHook(win: Window & typeof globalThis): () => void {
     const href = this.href;
     if (!armed() || filename === null || !/^https?:/i.test(href)) return originalClick.call(this);
     if (this.hasAttribute(FALLBACK_ATTRIBUTE)) return originalClick.call(this);
-    win.document.dispatchEvent(new win.CustomEvent(CAPTURE_EVENT, { detail: { href, filename } }));
+    const run = root.getAttribute(RUN_ATTRIBUTE);
+    const sequence = Number(root.getAttribute(SEQUENCE_ATTRIBUTE));
+    if (!run || !Number.isInteger(sequence)) return originalClick.call(this);
+    win.document.dispatchEvent(new win.CustomEvent(CAPTURE_EVENT, { detail: { href, filename, run, sequence } }));
     // Страховка от зависшего флага: очередь обязана снять его сама, но если она
     // умерла, через ARM_TIMEOUT_MS страница снова качает обычным образом.
     if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(() => root.removeAttribute(ARMED_ATTRIBUTE), ARM_TIMEOUT_MS);
+    timer = win.setTimeout(() => root.removeAttribute(ARMED_ATTRIBUTE), ARM_TIMEOUT_MS);
   };
 
   root.setAttribute(HOOK_ATTRIBUTE, '1');

@@ -4,11 +4,15 @@ import {
   findActionPanel,
   findOwnButtons,
   selectedItems,
+  selectedMessages,
   setOwnButtonLabel,
   updateOwnButton,
 } from './dom';
 import { DOWNLOAD_INTERVAL_MS, runDownloadQueue } from './download-queue';
+import { hasPendingMedia } from './media';
 import { createDownloadBridge, type DownloadBridge } from './download-bridge';
+import type { Logger } from './ports/logger';
+import type { Scheduler } from './ports/scheduler';
 
 /** Сколько держать итоговую надпись («Готово: 3/3»), не перетирая её реконсиляцией. */
 export const RESULT_HOLD_MS = 4000;
@@ -17,30 +21,47 @@ export const SETTLE_TIMEOUT_MS = 8000;
 
 export interface MaxLoaderController { start(): void; stop(): void; reconcile(): void; schedule(): void; isRunning(): boolean; }
 
-export function createController(
-  doc: Document = document,
-  intervalMs = DOWNLOAD_INTERVAL_MS,
-  makeBridge: () => DownloadBridge = () => createDownloadBridge(doc.defaultView as Window & typeof globalThis),
-): MaxLoaderController {
+export interface ControllerDeps {
+  doc: Document;
+  createObserver: (callback: MutationCallback) => MutationObserver;
+  scheduler: Scheduler;
+  logger: Logger;
+  intervalMs: number;
+  makeBridge: () => DownloadBridge;
+  createAbort: () => AbortController;
+  runQueue?: typeof runDownloadQueue;
+}
+
+export function createController(deps: ControllerDeps): MaxLoaderController {
+  const { doc, intervalMs, makeBridge, scheduler, logger, createAbort, createObserver } = deps;
+  const runQueue = deps.runQueue ?? runDownloadQueue;
   let observer: MutationObserver | undefined;
   let pending: { id: number; type: 'raf' | 'timeout' } | undefined;
   let running = false;
   let holdLabelUntil = 0;
+  let activeBridge: DownloadBridge | undefined;
+  let activeAbort: AbortController | undefined;
 
-  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const now = () => scheduler.now();
   const removeAll = () => doc.querySelectorAll<HTMLButtonElement>(`button[${OWN_BUTTON_ATTRIBUTE}]`).forEach((button) => button.remove());
 
   const download = (own: HTMLButtonElement) => {
     const bridge = makeBridge();
+    activeBridge = bridge;
+    activeAbort = createAbort();
     // Взводим синхронно: первый клик очереди уйдёт уже при поднятом флаге.
     const hooked = bridge.arm();
     running = true;
     own.disabled = true;
 
-    return runDownloadQueue({
+    return runQueue({
       doc,
       intervalMs,
       download: (href, filename) => bridge.download(href, filename),
+      expectCapture: () => bridge.expectCapture(),
+      logger,
+      sleep: scheduler.sleep,
+      signal: activeAbort.signal,
       onProgress: (completed, total) => {
         setOwnButtonLabel(own, `Скачивание ${completed}/${total}`);
       },
@@ -57,10 +78,11 @@ export function createController(
         return saved === total ? `Готово: ${saved}/${total}` : `Скачано ${saved} из ${total}`;
       })
       .then((label) => { setOwnButtonLabel(own, label); })
-      .catch(() => console.warn('[Max Loader] download queue failed'))
+      .catch(() => logger.warn('download-queue-failed'))
       .finally(() => {
         bridge.disarm();
         bridge.dispose();
+        if (activeBridge === bridge) { activeBridge = undefined; activeAbort = undefined; }
         running = false;
         own.disabled = false;
         holdLabelUntil = now() + RESULT_HOLD_MS;
@@ -70,7 +92,8 @@ export function createController(
   const reconcileDom = () => {
     const panel = findActionPanel(doc);
     const downloads = selectedItems(doc);
-    if (!panel || downloads.length === 0) {
+    const pending = selectedMessages(doc).some((message) => hasPendingMedia(message));
+    if (!panel || (downloads.length === 0 && !pending)) {
       if (!running) removeAll();
       return;
     }
@@ -82,7 +105,12 @@ export function createController(
     const own = panelButtons[0] ?? createOwnButton(downloads.length, doc);
     if (!panelButtons[0]) panel.element.append(own);
 
-    if (!running && now() >= holdLabelUntil) updateOwnButton(own, downloads.length);
+    if (!running && now() >= holdLabelUntil) {
+      if (pending) {
+        setOwnButtonLabel(own, 'Скачать файлы');
+        own.setAttribute('aria-description', 'Количество уточняется при скачивании');
+      } else updateOwnButton(own, downloads.length);
+    }
     if (own.disabled !== running) own.disabled = running;
 
     if (own.dataset.maxLoaderBound === 'true') return;
@@ -98,8 +126,7 @@ export function createController(
       // Мутации, которые мы сами только что внесли, не должны будить нас снова.
       observer?.takeRecords();
     };
-    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') pending = { id: window.requestAnimationFrame(reconcile), type: 'raf' };
-    else pending = { id: globalThis.setTimeout(reconcile, 50) as unknown as number, type: 'timeout' };
+    pending = { id: scheduler.request(reconcile), type: 'raf' };
   };
 
   const isOwnMutation = (record: MutationRecord) => {
@@ -110,7 +137,7 @@ export function createController(
   return {
     start() {
       if (observer || !doc.body) return;
-      observer = new MutationObserver((records) => {
+      observer = createObserver((records) => {
         if (records.every(isOwnMutation)) return;
         schedule();
       });
@@ -120,11 +147,15 @@ export function createController(
     stop() {
       observer?.disconnect(); observer = undefined;
       if (pending !== undefined) {
-        if (pending.type === 'raf' && typeof window !== 'undefined') window.cancelAnimationFrame(pending.id);
-        else globalThis.clearTimeout(pending.id);
+        scheduler.cancel(pending.id);
         pending = undefined;
       }
       removeAll();
+      activeAbort?.abort();
+      activeBridge?.disarm();
+      activeBridge?.dispose();
+      activeAbort = undefined;
+      activeBridge = undefined;
     },
     reconcile: reconcileDom, schedule, isRunning: () => running,
   };

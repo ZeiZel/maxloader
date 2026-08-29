@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createController } from '../src/content';
+import { controllerDeps } from './factories';
 
 const fixture = () => {
   document.body.innerHTML = `<div class="actions"><button>Выбрано 2</button><button>Удалить</button><button>Переслать</button></div>
@@ -11,7 +12,7 @@ const fixture = () => {
 describe('controller lifecycle', () => {
   it('cancels a pending animation-frame reconcile on stop', () => {
     vi.useFakeTimers(); fixture();
-    const controller = createController(document);
+    const controller = createController(controllerDeps(document));
     controller.start();
     controller.stop();
     vi.runAllTimers();
@@ -19,14 +20,14 @@ describe('controller lifecycle', () => {
     vi.useRealTimers();
   });
   it('removes stale buttons when panel is replaced or files disappear', () => {
-    fixture(); const controller = createController(document); controller.reconcile();
+    fixture(); const controller = createController(controllerDeps(document)); controller.reconcile();
     const oldPanel = document.querySelector('.actions')!; expect(oldPanel.querySelectorAll('[data-max-loader-action]')).toHaveLength(1);
     oldPanel.replaceWith(document.createElement('div')); controller.reconcile();
     expect(document.querySelectorAll('[data-max-loader-action]')).toHaveLength(0);
   });
 
   it('keeps final/progress text while queue is running and prevents duplicates', async () => {
-    vi.useFakeTimers(); fixture(); const controller = createController(document, 300); controller.reconcile();
+    vi.useFakeTimers(); fixture(); const controller = createController(controllerDeps(document, { intervalMs: 300 })); controller.reconcile();
     const own = document.querySelector('[data-max-loader-action]') as HTMLButtonElement;
     const downloads = Array.from(document.querySelectorAll<HTMLButtonElement>('[aria-label="Скачать"]'));
     downloads.forEach((button) => { button.onclick = () => controller.reconcile(); });
@@ -43,9 +44,20 @@ describe('controller lifecycle', () => {
 });
 
 describe('reconcile is idempotent (no repaint loop)', () => {
+  it('shows a pending action for selected lazy media without a materialized URL', () => {
+    document.body.innerHTML = `<div class="actions"><button>Выбрано 1</button><button>Удалить</button><button>Переслать</button></div>
+      <div><div class="messageWrapper"><button class="selection"><span class="selection--status selection--status-selected"></span></button>
+      <div class="media"><div class="tile"></div></div></div></div>`;
+    const controller = createController(controllerDeps(document));
+    controller.reconcile();
+    const button = document.querySelector<HTMLButtonElement>('[data-max-loader-action]');
+    expect(button?.textContent).toBe('Скачать файлы');
+    expect(button?.getAttribute('aria-description')).toContain('уточняется');
+  });
+
   it('makes no DOM mutations once the button is in place', async () => {
     fixture();
-    const controller = createController(document);
+    const controller = createController(controllerDeps(document));
     controller.reconcile();
     const records: MutationRecord[] = [];
     const spy = new MutationObserver((list) => records.push(...list));
@@ -59,7 +71,7 @@ describe('reconcile is idempotent (no repaint loop)', () => {
 
   it('does not re-arm the click handler on every reconcile', () => {
     fixture();
-    const controller = createController(document, 0);
+    const controller = createController(controllerDeps(document, { intervalMs: 0 }));
     controller.reconcile();
     const own = document.querySelector('[data-max-loader-action]') as HTMLButtonElement;
     controller.reconcile();

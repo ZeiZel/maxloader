@@ -1,4 +1,6 @@
 import { CHANNEL, type DownloadRequest, type DownloadResponse } from './protocol';
+import { validateDownloadRequest } from './domain/download-policy';
+import { noopLogger, type Logger } from './ports/logger';
 
 /**
  * chrome.downloads отвергает пути, `..` и управляющие символы,
@@ -12,15 +14,11 @@ export function sanitizeFilename(raw: string): string {
 }
 
 export const isDownloadRequest = (value: unknown): value is DownloadRequest =>
-  typeof value === 'object' && value !== null &&
-  (value as DownloadRequest).channel === CHANNEL &&
-  (value as DownloadRequest).type === 'download' &&
-  typeof (value as DownloadRequest).href === 'string' &&
-  /^https?:/i.test((value as DownloadRequest).href);
+  validateDownloadRequest(value).ok;
 
 export async function startDownload(
   request: DownloadRequest,
-  downloads: typeof chrome.downloads = chrome.downloads,
+  downloads: typeof chrome.downloads,
 ): Promise<DownloadResponse> {
   try {
     const id = await downloads.download({
@@ -35,10 +33,22 @@ export async function startDownload(
   }
 }
 
-export function installBackground(runtime: typeof chrome.runtime = chrome.runtime): void {
-  runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (!isDownloadRequest(message)) return false;
-    void startDownload(message).then(sendResponse);
+export function installBackground(
+  runtime: typeof chrome.runtime,
+  downloads: typeof chrome.downloads,
+  logger: Logger = noopLogger,
+  expectedOrigin = 'https://web.max.ru',
+): void {
+  runtime.onMessage.addListener((message, sender, sendResponse) => {
+    const policy = validateDownloadRequest(message);
+    const tabUrl = sender.tab?.url;
+    const senderOk = Boolean(sender.id === runtime.id && sender.tab && sender.frameId === 0 &&
+      typeof tabUrl === 'string' && tabUrl.startsWith(`${expectedOrigin}/`));
+    if (!policy.ok || !senderOk) {
+      logger.warn('download-rejected', { reason: policy.ok ? 'sender-context' : policy.reason });
+      return false;
+    }
+    void startDownload(policy.request, downloads).then(sendResponse);
     return true; // ответ придёт асинхронно
   });
 }
